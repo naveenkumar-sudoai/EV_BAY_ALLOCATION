@@ -96,6 +96,16 @@ To watch one run happen — a per-car trace plus a bay-occupancy timeline
 This prints each car's arrival, wait, assigned bay, and charge time, and saves
 `results/simulation_timeline.png`.
 
+To render a **real-time animation** (MP4/GIF) that plays the run forward — cars
+arrive on the queue lane, fill up on a bay, then leave:
+
+```bash
+.venv/bin/python animate_run.py --strategy srpt --rate 3.0 --duration 720
+.venv/bin/python animate_run.py --strategy aging --out results/sim.gif
+```
+
+Requires `ffmpeg` (MP4) or `pillow` (GIF).
+
 ---
 
 ## Methodology
