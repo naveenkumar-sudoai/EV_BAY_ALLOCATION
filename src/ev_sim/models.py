@@ -81,6 +81,8 @@ class Car:
 
     service_start_time: float | None = None
     service_end_time: float | None = None
+    #: Bay this car was assigned to (set by the engine at service start).
+    served_bay: int | None = None
 
     @property
     def kwh_needed(self) -> float:

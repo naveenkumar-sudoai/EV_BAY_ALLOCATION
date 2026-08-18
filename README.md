@@ -83,6 +83,19 @@ configuration with a homogeneous `4×40 kW` one. Experiment **B** calibrates the
 station capacity first and records the offered load `ρ = arrival_rate /
 capacity` alongside each arrival rate.
 
+### Seeing a single run
+
+To watch one run happen — a per-car trace plus a bay-occupancy timeline
+(Gantt chart):
+
+```bash
+.venv/bin/python visualize_run.py --strategy aging --rate 2.0 --seed 0
+.venv/bin/python visualize_run.py --strategy srpt   --duration 720
+```
+
+This prints each car's arrival, wait, assigned bay, and charge time, and saves
+`results/simulation_timeline.png`.
+
 ---
 
 ## Methodology

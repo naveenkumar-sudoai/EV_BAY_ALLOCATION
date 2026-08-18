@@ -243,6 +243,7 @@ class Simulation:
         self.waiting.remove(car)
         now = self.env.now
         car.service_start_time = now
+        car.served_bay = bay.bay_id
 
         charge_min = time_to_charge(
             car.kwh_needed,
