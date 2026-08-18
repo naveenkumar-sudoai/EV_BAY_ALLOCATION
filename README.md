@@ -106,6 +106,15 @@ arrive on the queue lane, fill up on a bay, then leave:
 
 Requires `ffmpeg` (MP4) or `pillow` (GIF).
 
+### Interactive game
+
+A tiny browser toy: push cars with a chosen battery %, watch them charge and
+leave, with 1x/4x/10x/30x time controls. No installs — just open it:
+
+```bash
+xdg-open game/index.html
+```
+
 ---
 
 ## Methodology

@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>⚡ EV Bay Sim</title>
+<style>
+  :root{--bg:#12151c;--panel:#1c2130;--line:#2a3040;--text:#e8ecf4;--dim:#8b94a7}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);padding:14px}
+  header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:12px}
+  h1{font-size:18px;margin:0}
+  .clock{font-variant-numeric:tabular-nums;font-weight:700;font-size:18px;color:#7fd1ff}
+  .speed button{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:7px;
+    padding:7px 13px;cursor:pointer;font-weight:600;font-size:13px}
+  .speed button.on{background:#2b6cb0;border-color:#2b6cb0;color:#fff}
+  .stats{margin-left:auto;color:var(--dim);font-size:13px;display:flex;gap:14px}
+  .stats b{color:var(--text)}
+  .spawn{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;display:flex;
+    gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .spawn label{font-size:13px;color:var(--dim)}
+  .spawn input[type=range]{width:160px}
+  .spawn select{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:6px}
+  .spawn .btn{background:#2f855a;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-weight:700;cursor:pointer;font-size:14px}
+  .spawn .btn:hover{filter:brightness(1.1)}
+  #queue{min-height:44px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px;
+    display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+  #queue .lbl{color:var(--dim);font-size:12px;font-style:italic}
+  .chip{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12px;
+    display:flex;flex-direction:column;gap:2px;min-width:78px}
+  .chip .wt{color:#e0a33a;font-size:11px}
+  #bays{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+  .bay{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;min-height:110px}
+  .bay h3{margin:0 0 8px;font-size:14px}
+  .bay .idle{color:var(--dim);font-style:italic;font-size:13px;padding-top:6px}
+  .bar{height:16px;background:#0c0f15;border-radius:8px;overflow:hidden;position:relative;border:1px solid var(--line)}
+  .fill{height:100%;width:0%;transition:width .1s linear}
+  .socline{font-size:12px;margin-top:6px;display:flex;justify-content:space-between;color:var(--dim)}
+  .socline b{color:var(--text)}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ EV Bay Sim</h1>
+  <span class="clock" id="clock">0:00</span>
+  <div class="speed" id="speed">
+    <button data-s="0">⏸</button><button data-s="1" class="on">1x</button>
+    <button data-s="4">4x</button><button data-s="10">10x</button><button data-s="30">30x</button>
+  </div>
+  <div class="stats" id="stats">
+    <span>Arrived <b id="nArr">0</b></span>
+    <span>Waiting <b id="nWait">0</b></span>
+    <span>Charging <b id="nChg">0</b></span>
+    <span>Served <b id="nSrv">0</b></span>
+  </div>
+</header>
+
+<section class="spawn">
+  <label>Battery % <span id="socVal">30%</span></label>
+  <input type="range" id="soc" min="5" max="90" value="30">
+  <label>Tier</label>
+  <select id="tier">
+    <option value="random">Random</option>
+    <option value="small">Small</option>
+    <option value="mid">Mid</option>
+    <option value="premium">Premium</option>
+  </select>
+  <button class="btn" id="spawn1">➕ Push car</button>
+  <button class="btn" id="spawn5">➕➕ Push 5</button>
+</section>
+
+<div id="queue"><span class="lbl">waiting queue is empty…</span></div>
+<div id="bays"></div>
+
+<script>
+const BAY_POWER=[60,60,22,22];
+const TIERS={
+  small:{cap:[19,24],max:[7,22],color:'#8c8c8c'},
+  mid:{cap:[30,40],max:[30,80],color:'#4c78a8'},
+  premium:{cap:[65,75],max:[80,150],color:'#e45756'}
+};
+const TIER_WEIGHTS=[['small',0.35],['mid',0.5],['premium',0.15]];
+const BASE=6;            // sim minutes per real second at 1x
+const CHANGE=1.5;        // changeover minutes (brief swap gap)
+
+let simTime=0, speed=1, last=performance.now(), nextId=1;
+let cars=[], bays=BAY_POWER.map((kw,i)=>({id:i,kw,car:null,freeAt:0}));
+
+function rand(a,b){return a+Math.random()*(b-a);}
+function pickTier(sel){
+  if(sel!=='random')return sel;
+  const r=Math.random();let acc=0;
+  for(const [t,w] of TIER_WEIGHTS){acc+=w;if(r<acc)return t;}
+  return 'mid';
+}
+
+function spawn(n){
+  for(let k=0;k<n;k++){
+    const tier=pickTier(document.getElementById('tier').value);
+    const t=TIERS[tier];
+    const soc=+document.getElementById('soc').value;
+    cars.push({id:nextId++,arrive:simTime,soc,target:100,cap:rand(t.cap[0],t.cap[1]),
+      maxKw:rand(t.max[0],t.max[1]),tier,color:t.color,state:'wait',bay:null,start:0});
+  }
+}
+
+function assign(){
+  // FCFS: longest-waiting car -> soonest-free bay
+  const waiting=cars.filter(c=>c.state==='wait').sort((a,b)=>a.arrive-b.arrive);
+  for(const car of waiting){
+    const bay=bays.filter(b=>b.freeAt<=simTime).sort((a,b)=>a.freeAt-b.freeAt)[0];
+    if(!bay)break;
+    car.state='charge';car.bay=bay.id;car.start=simTime;
+    bay.car=car;bay.freeAt=Infinity;
+  }
+}
+
+function step(dt){
+  simTime+=dt;
+  // advance charging
+  for(const bay of bays){
+    const c=bay.car;
+    if(!c)continue;
+    const P=Math.min(bay.kw,c.maxKw);
+    const tFull=c.cap/P*60;                    // minutes for 100% linear
+    const rate=c.soc<80 ? 100/tFull : 20/(0.7*tFull);
+    c.soc=Math.min(c.target,c.soc+rate*dt);
+    if(c.soc>=c.target){                       // done -> swap out
+      bay.car=null;bay.freeAt=simTime+CHANGE;c.state='done';
+    }
+  }
+  assign();
+}
+
+function fmt(m){return Math.floor(m/60)+':'+String(Math.floor(m%60)).padStart(2,'0');}
+
+function render(){
+  document.getElementById('clock').textContent=fmt(simTime);
+  const nWait=cars.filter(c=>c.state==='wait').length;
+  const nChg=cars.filter(c=>c.state==='charge').length;
+  const nSrv=cars.filter(c=>c.state==='done').length;
+  document.getElementById('nArr').textContent=cars.length;
+  document.getElementById('nWait').textContent=nWait;
+  document.getElementById('nChg').textContent=nChg;
+  document.getElementById('nSrv').textContent=nSrv;
+
+  // queue
+  const q=document.getElementById('queue');
+  const waiting=cars.filter(c=>c.state==='wait').sort((a,b)=>a.arrive-b.arrive);
+  q.innerHTML=waiting.length?'':`<span class="lbl">waiting queue is empty…</span>`;
+  for(const c of waiting){
+    const chip=document.createElement('div');chip.className='chip';
+    chip.style.borderLeft=`4px solid ${c.color}`;
+    chip.innerHTML=`#${c.id} ${c.tier}<br><span class="wt">${c.soc.toFixed(0)}% · waited ${(simTime-c.arrive).toFixed(0)}m</span>`;
+    q.appendChild(chip);
+  }
+
+  // bays
+  const box=document.getElementById('bays');box.innerHTML='';
+  for(const bay of bays){
+    const el=document.createElement('div');el.className='bay';
+    if(bay.car){
+      const c=bay.car;
+      const pct=((c.soc-0)/100*100).toFixed(0);   // fill 0..100 of SOC
+      el.innerHTML=`<h3>Bay ${bay.id+1} · ${bay.kw} kW · <span style="color:${c.color}">#${c.id} ${c.tier}</span></h3>
+        <div class="bar"><div class="fill" style="width:${pct}%;background:${c.color}"></div></div>
+        <div class="socline"><span>SOC <b>${c.soc.toFixed(0)}%</b></span><span>charging ${(simTime-c.start).toFixed(0)}m</span></div>`;
+    }else{
+      el.innerHTML=`<h3>Bay ${bay.id+1} · ${bay.kw} kW</h3><div class="idle">— free —</div>`;
+    }
+    box.appendChild(el);
+  }
+}
+
+function loop(now){
+  const rdt=(now-last)/1000;last=now;
+  if(speed>0)step(rdt*BASE*speed);
+  render();
+  requestAnimationFrame(loop);
+}
+
+document.getElementById('speed').addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b)return;
+  speed=+b.dataset.s;
+  document.querySelectorAll('#speed button').forEach(x=>x.classList.toggle('on',x===b));
+});
+document.getElementById('soc').addEventListener('input',e=>{
+  document.getElementById('socVal').textContent=e.target.value+'%';
+});
+document.getElementById('spawn1').addEventListener('click',()=>spawn(1));
+document.getElementById('spawn5').addEventListener('click',()=>spawn(5));
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
