@@ -1,132 +1,225 @@
-# EV Bay Allocation System
+# EV Bay Allocation — Discrete-Event Simulation
 
-## Intelligent SOC-Aware Bay Allocation for Multi-Bay EV Charging Stations
+A SimPy-based discrete-event simulation of a **multi-bay EV charging station**
+that compares three bay-allocation strategies on **wait time** and **fairness**:
 
-A systems analysis and design architecture for **dynamic, capacity-matched, fairness-aware charging bay scheduling** — replacing simple first-come-first-served with intelligent bay-to-car matching that minimizes overall waiting time.
-
----
-
-## The Problem
-
-In a multi-bay EV charging station (e.g., 6 bays), cars are conventionally served **first-come-first-served** — with no regard to how much charge each car actually needs or how soon each bay will free up. This leads to:
-
-- A car needing a 10-minute top-up sitting behind one that needs an 80% full charge
-- High-power bays wasted on vehicles that can't accept the full rate
-- No fairness guarantees — large-need cars can get starved indefinitely
-
-## The Core Idea
-
-Replace static queuing with **dynamic, SOC-aware bay allocation**:
-
-1. Continuously track the remaining charge time of every occupied bay
-2. When a new car joins the queue, match it to the bay that **minimizes overall waiting time** across the system
-3. A car needing only a small top-up gets routed to the bay finishing soonest
-4. Priority aging prevents starvation of large-need vehicles
-
-**Structurally**, this is an **online scheduling / constrained assignment problem**, related to Shortest Remaining Processing Time (SRPT) scheduling and job-shop scheduling with machine-eligibility constraints.
-
----
-
-## Why Naive Approaches Fail
-
-| Issue | Description |
-|---|---|
-| **Non-linear charging curve** | Li-ion cells charge in CC/CV phases — the last 20% often takes as long as the first 70%. Raw percentage-remaining is a poor proxy for actual time-remaining. |
-| **Battery capacity variance** | 10% on a 40 kWh car ≠ 10% on a 100 kWh car. kWh-remaining (SOC × capacity) is needed for comparable estimates. |
-| **Bay power vs. vehicle acceptance** | Effective charging power = `min(bay_kW, vehicle_max_kW)`. Not all vehicles can accept a bay's full power. |
-| **Starvation risk** | Pure SRPT (shortest-job-first) starves large-need cars under sustained queue load. |
-| **Changeover overhead** | Physically swapping cars takes 2–5 minutes — treating transitions as instantaneous makes schedules systematically over-optimistic. |
-| **Telemetry access** | Accurate SOC data requires vehicle-side integration (ISO 15118) and station-side protocol support (OCPP). |
-
----
-
-## Proposed System Design
-
-### 1. Constrained Optimal Assignment
-
-Re-solve a **weighted bipartite matching** between waiting cars and available/soon-to-be-available bays on every state change (car arrives, bay frees up). Uses the **Hungarian algorithm** (or greedy approximation for embedded-scale queues).
-
-### 2. Accurate Time Estimation
-
-```
-time_to_target(car, bay) = f(kWh_needed, charge_curve_model, min(bay_kW, vehicle_max_kW))
-```
-
-Uses a **piecewise CC/CV curve model** rather than linear percentage assumptions.
-
-### 3. Fairness via Priority Aging
-
-Borrowed from OS scheduler design (e.g., Linux CFS virtual-runtime fairness):
-
-```
-priority(car) = charge_time_needed / (1 + k × wait_time_elapsed)
-```
-
-- **Lower score → served sooner**
-- As wait time grows, even an 80%-need car eventually outranks a freshly arrived 20%-need car
-- `k` is a tunable aging constant
-- **Hard wait-time cap** guarantees no car waits beyond a fixed ceiling
-- **Periodic re-ranking window** avoids pathological reshuffling
-
-### 4. Practical Guards
-
-- **Changeover buffer** (2–5 min) added to every bay's predicted free time
-- **SOC input** via OCPP/ISO 15118 where hardware allows; app-based self-report with plausibility checks as MVP fallback
-- **Re-evaluate on every state change** (not a one-shot plan)
-
----
-
-## Allocation Strategies Compared
-
-| Strategy | Basis | Key Flaw |
+| Strategy | Basis | Failure mode |
 |---|---|---|
-| **First-Come-First-Served** | Arrival order only | Bays occupied far longer than necessary |
-| **Pure SRPT** (shortest need first) | Charge time needed | Starves large-need cars under sustained load |
-| **SOC-aware + aging** (proposed) | Charge time + wait time + capacity matching | Requires accurate telemetry and tuning of `k` |
-| **Auction / mechanism design** | Reported user preferences | Complex; assumes truthful reporting |
+| **FCFS** | Arrival order to the soonest-free bay | Ignores charge time & power matching → high mean wait |
+| **Pure SRPT** | Min total completion time (Hungarian) | Starves large/slow-charging cars under load |
+| **SOC-aware + aging** *(proposed)* | Completion time + priority aging + hard cap | Requires tuning the aging constant `k` |
+
+The proposed method blends the SOC-aware completion-time cost with a
+**priority-aging score** and a **hard wait-time cap**, aiming to sit on the
+efficiency–fairness frontier: near-SRPT efficiency with near-FCFS fairness.
 
 ---
 
-## System Architecture
+## Installation
 
-```
-┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Telemetry   │────▶│  Allocation       │────▶│  Bay Assignment  │
-│  (SOC, kW)   │     │  Engine           │     │  Output          │
-└─────────────┘     │  (Bipartite       │     └─────────────────┘
-                    │   Matching +      │
-┌─────────────┐     │   Priority Aging) │     ┌─────────────────┐
-│  Queue State │────▶│                   │────▶│  User Display    │
-│  (waiting)   │     └──────────────────┘     └─────────────────┘
-└─────────────┘
+Requires Python ≥ 3.10.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
 
----
-
-## Key Research Foundations
-
-- Shortest Remaining Processing Time (SRPT) scheduling
-- Hungarian algorithm for bipartite matching
-- Linux CFS virtual-runtime fairness (priority aging)
-- ISO 15118 (vehicle-to-grid communication)
-- OCPP (Open Charge Point Protocol)
+Dependencies: `simpy`, `numpy`, `scipy`, `pandas`, `matplotlib`, `seaborn`,
+`pytest`.
 
 ---
 
-## Project Status
+## Project structure
 
-**Phase**: Design & Architecture (Scoping Note)
+```
+src/ev_sim/
+  models.py        Car / Bay dataclasses + Indian-market battery mix
+  charge_curve.py  Piecewise CC/CV charging curve (time vs SOC)
+  allocators.py    FCFS, SRPT, SOC-aware+aging (common assign() interface)
+  simulation.py    SimPy engine + SimulationConfig / SimulationResult
+  metrics.py       Jain's fairness, wait-time summaries, bay utilization
+  experiments.py   Experiment runners A/B/C/D + publication plots
+tests/             pytest unit tests (charge curve, allocators, metrics, engine)
+results/           CSVs + figures produced by the experiments
+run_experiments.py Reproducibility entry point
+```
 
-This is a systems analysis and design document. The concept bridges an identified gap: while SOC-based prioritization, changeover handling, and online scheduling theory exist separately, a combined system doing **capacity-matched, fairness-aware, curve-accurate bay assignment** within a single station is not commonly deployed.
+---
+
+## Running the tests
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+The suite covers the charge-curve math (monotonicity, the "last 20% ≈ first
+70%" calibration), each allocator in isolation (including the Hungarian
+optimality and the incompatibility penalty), Jain's fairness against known
+values, and simulation-level invariants plus multi-seed behavioural checks.
+
+---
+
+## Running the experiments
+
+```bash
+.venv/bin/python run_experiments.py --experiment all     # A + B + C + D
+.venv/bin/python run_experiments.py --experiment a       # just the baseline
+.venv/bin/python run_experiments.py --experiment a --seeds 50   # more seeds
+```
+
+Every experiment writes one or more CSVs and a publication-style figure to
+`results/`. All runs are seeded and logged for reproducibility.
+
+| Experiment | Command | Output |
+|---|---|---|
+| **A — Baseline** | `--experiment a` | `experiment_a_baseline.csv`, `experiment_a_raw.csv`, `experiment_a_boxplot.png` |
+| **B — Load sensitivity** | `--experiment b` | `experiment_b_load_sensitivity.csv`, `.png` |
+| **C — k sensitivity** | `--experiment c` | `experiment_c_k_sensitivity.csv`, `.png` |
+| **D — Bay heterogeneity** | `--experiment d` | `experiment_d_heterogeneity.csv`, `experiment_d_heterogeneity_summary.csv`, `.png` |
+
+Experiments **A/B/C** use the default 4-bay configuration
+(`60/60/22/22 kW`); Experiment **D** explicitly contrasts this heterogeneous
+configuration with a homogeneous `4×40 kW` one. Experiment **B** calibrates the
+station capacity first and records the offered load `ρ = arrival_rate /
+capacity` alongside each arrival rate.
+
+---
+
+## Methodology
+
+### Charging curve (`charge_curve.py`)
+
+Lithium-ion charging is modelled piecewise:
+
+* **CC (constant current), 0–80% SOC** — linear in time.
+* **CV (constant voltage), 80–100% SOC** — a concave taper
+  `g(u) = 1 − (1 − u)²`, calibrated so the **last 20% takes as long as the
+  first 70%** (a standard Li-ion rule of thumb). A full charge therefore takes
+  `1.5 × T_full`, where `T_full = capacity / power`.
+
+`time_to_charge(...)` returns minutes and is monotone by construction (it is a
+difference of two evaluations of the monotone primitive
+`time_from_0_to_soc`). Effective power is `min(bay.rated_kw, car.max_accept_kw)`
+so a bay cannot charge faster than a car can accept.
+
+### Vehicle mix (`models.py`)
+
+Battery capacities are sampled from a three-tier Indian-market mix
+(≈50/35/15):
+
+| Tier | Capacity | `max_accept_kw` | Example |
+|---|---|---|---|
+| small | 19–24 kWh | 7–22 kW | Tiago EV, eC3 |
+| mid | 30–40 kWh | 30–80 kW | Nexon EV, Punch EV |
+| premium | 65–75 kWh | 80–150 kW | eC9, XUV400 LR |
+
+### Allocation strategies (`allocators.py`)
+
+All strategies expose one interface, `assign(cars, bays, now) -> {car_id: bay_id}`,
+and the engine re-solves on **every state change** (car arrival, bay freed).
+
+* **FCFS** — sort cars by arrival, bays by free time, zip.
+* **SRPT** — cost = predicted completion time; the **Hungarian algorithm**
+  (`scipy.optimize.linear_sum_assignment`) finds the min-total-completion
+  matching. Incompatible pairings get a heavy finite penalty (not a hard
+  exclusion) so the matrix stays a complete bipartite graph.
+* **SOC-aware + aging** — completion time is split into a bay-availability term
+  plus an *aged work* term:
+
+  ```
+  cost[car, bay] = max(now, bay.free) + charge_time(car, bay) / (1 + k · wait)
+  ```
+
+  This is `priority_score = charge_time_needed / (1 + k·wait)` applied as a
+  weight on the work term. At `k = 0` it reduces *exactly* to SRPT. A **hard
+  wait-time cap** (`wait_cap`, default 45 min) force-assigns cars that have
+  waited past the ceiling to the soonest-free bay in arrival order, regardless
+  of score.
+
+### Simulation (`simulation.py`)
+
+* Poisson arrivals (configurable mean rate, cars/hour).
+* Initial SOC ~ Beta(2.2, 3.0) scaled to [2, 90]% (low–moderate arrival SOC);
+  70% target 100%, 30% a partial top-up in [80, 95]%.
+* Changeover (swap) buffer sampled uniformly in [2, 5] min, added to each bay's
+  predicted free time.
+* **Common random numbers (CRN)**: three independent RNG streams are derived
+  from each seed via `SeedSequence.spawn(3)` (arrivals / car attributes /
+  changeover). Arrival times, car attributes, and each car's swap-out buffer are
+  all sampled in arrival order, so the same seed yields an *identical* car
+  stream across strategies — a paired, variance-reduced design.
+* A `warmup` period discards the initial transient. Wait-time metrics are
+  computed over cars that **began** service after warmup (their wait is fully
+  observed at service start); cars still queued at the horizon are
+  **right-censored** and reported as `n_censored` rather than silently dropped,
+  since under SRPT the censored cars are disproportionately the starved ones.
+
+### Metrics (`metrics.py`)
+
+* Mean / median / max wait time.
+* **Jain's fairness index** `J = (Σx)² / (n Σx²)` over per-car wait times
+  (`1` = perfectly equal). Note that a system where most cars wait ~0 and a few
+  wait long has a low `J`; this is a comparative, not absolute, fairness measure.
+* Starvation count (cars waiting ≥ 30 min).
+* `n_censored` — cars still queued at the horizon (right-censored wait).
+* Per-bay utilization over the steady-state window.
+
+---
+
+## What the results show
+
+**Experiment A (baseline, `ρ ≈ 0.7`, 30 seeds)** — mean ± 95% CI:
+
+| Metric | FCFS | Pure SRPT | SOC-aware + aging |
+|---|---|---|---|
+| Mean wait (min) | 17.7 | **13.4** | 15.5 |
+| Max wait (min) | 130.1 | 142.8 | **112.6** |
+| Jain's fairness | 0.30 | 0.20 | 0.30 |
+
+SRPT is the most *efficient* (lowest mean wait) but the most *unfair* (lowest
+Jain's, highest worst-case wait). The proposed method recovers most of SRPT's
+efficiency while bounding the worst-case wait *below* even FCFS.
+
+**Experiment B (load sweep)** — SRPT's max wait diverges upward as the offered
+load `ρ` grows (starvation), while the proposed method's worst-case wait stays
+below FCFS across the whole range. Capacity is calibrated first
+(`≈ 2.9 cars/h`) and `ρ` is recorded per rate; the top rate reaches `ρ ≈ 0.9`.
+
+**Experiment C (k sweep, hard cap disabled to isolate `k`)** — run near
+saturation (`ρ ≈ 1.0`) where the ageing discount is observable: increasing `k`
+trades efficiency for fairness, with mean wait rising and Jain's fairness rising
+monotonically, tracing the efficiency–fairness frontier.
+
+**Experiment D (bay heterogeneity)** — with unequal bays (60/60/22/22 kW),
+capacity matching matters: FCFS (which ignores power matching) degrades far
+more when bays are unequal than the completion-time-aware methods, so the
+proposed method captures most of SRPT's matching benefit while staying fairer.
+
+> Exact numbers depend on the seed count and defaults; regenerate with the
+> commands above. Figures are saved at 300 dpi with publication-style labels.
+
+---
+
+## Reproducibility
+
+* Every run is seeded; the seed is logged in the raw CSVs.
+* CRN ensures the same seed produces identical arrival/car streams across
+  strategies, so the strategy comparison is paired at the *point-estimate*
+  level. Reported 95% CIs are per-strategy Student-t intervals across seeds
+  (not paired-difference intervals).
+* Re-run everything from scratch:
+
+  ```bash
+  .venv/bin/python -m pytest -q
+  .venv/bin/python run_experiments.py --experiment all
+  ```
 
 ---
 
 ## Author
 
-**Naveen** — Project Scoping & Systems Analysis
-
----
+**Naveen** — Project design & implementation.
 
 ## License
 
-All rights reserved. This design architecture is a project scoping document.
+All rights reserved.
